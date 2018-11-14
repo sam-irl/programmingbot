@@ -10,7 +10,7 @@ var bot = new mediawiki({
 const TEMPLATE_PAGE_ID = '3045523';
 const SHUTOFF_PAGE_ID = '59047314';
 
-// This would be set when the bot actually runs
+// Would be set in actual code
 let password;
 
 bot.logIn('ProgrammingBot', password, (err, res) => {
@@ -70,7 +70,8 @@ function getPagesInCategory(cat) {
             cmtitle: cat,
             cmtype: 'page',
             cmlimit: 'max',
-            cmprop: 'title'
+            cmprop: 'title',
+            cmnamespace: '0'
         }, (err, info, next, data) => {
             if (err) {
                 reject(err);
@@ -316,8 +317,12 @@ function shouldEditPage(page) {
     return new Promise((resolve, reject) => {
         checkTemplatesExists(page).then(temp => {
             isShutoff().then(shutoff => {
-                checkExcluded().then(excluded => {
-                    resolve((!temp) && (!shutoff) && (!excluded));
+                checkExcluded(page).then(excluded => {
+                    checkIsRedirect(page.replace('Talk:', '')).then(redirect => {
+                        resolve((!temp) && (!shutoff) && (!excluded)/* && (!redirect)*/);
+                    }, err => {
+                        reject(err);
+                    });
                 }, err => {
                     reject(err);
                 });
@@ -326,6 +331,24 @@ function shouldEditPage(page) {
             });
         }, err => {
             reject(err);
+        });
+    });
+}
+
+function checkIsRedirect(page) {
+    return new Promise((resolve, reject) => {
+        bot.api.call({
+            action: 'query',
+            prop: 'info',
+            titles: page,
+            format: 'json',
+            formatversion: '2'
+        }, (err, info, next, data) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            resolve(info.pages[0].redirect);
         });
     });
 }
@@ -345,22 +368,32 @@ function getPageClass(page) {
             prop: 'wikitext'
         }, (err, info, next, data) => {
             if (err) {
+                if (err == 'Error: Error returned by API: The page you specified doesn\'t exist.') {
+                    checkIsRedirect(page.split('Talk:')[1]).then(re => {
+                        if (re) {
+                            resolve('redirect');
+                        } else {
+                            resolve(false);
+                        }
+                    });
+                    return;
+                }
                 reject(err);
                 return;
             }
             var wikitext = info['wikitext']['*'];
-            var rating = wikitext.split('|class=').pop();
-            if (rating.indexOf('}}') > rating.indexOf('|')) {
+            var rating = wikitext.split('|class=').length > 1 ? wikitext.split('|class=')[1] : false;
+            if (!(wikitext.indexOf('|class=') > -1)) {
+                rating = false;
+            } else if ((rating.indexOf('}}') > rating.indexOf('|')) && (rating.indexOf('|') > -1)) {
                 rating = rating.split('|')[0];
+                rating = rating.replace(/\s+/g, '')
             } else {
                 rating = rating.split('}}')[0];
+                rating = rating.replace(/\s+/g, '')
             }
-            if (!rating) {
-                resolve(false);
-            } else {
-                resolve(rating);
-            }
-        })
+            resolve(rating);
+        });
     });
 }
 
@@ -371,9 +404,8 @@ function getPageClass(page) {
  * @param {String} page 
  */
 function editPage(page) {
-    shouldEditPage.then(should => {
+    shouldEditPage(page).then(should => {
         if (!should) {
-            console.log('Skipping page: ' + page);
             return;
         }
         var textToPrepend = '{{WikiProject Protected areas';
@@ -396,7 +428,7 @@ function editPage(page) {
         }, err => {
             console.error(err);
         });
-    })
+    });
 }
 
 /**
@@ -426,3 +458,5 @@ function run() {
     runInCategory('Category:Parks in Queens, New York');
     runInCategory('Category:Parks in Staten Island');
 }
+
+run();
